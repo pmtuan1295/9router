@@ -180,6 +180,14 @@ const INTERNAL_MODELS_FETCH_HEADER = "x-9r-internal-models-fetch";
 
 // LLM kind sentinel — combos/models with no explicit kind default to LLM
 const LLM_KIND = "llm";
+const IMAGE_KIND = "image";
+
+// Kinds listed by the bare GET /v1/models (and its single-model lookup).
+// Image-generation models are included alongside chat models so clients that
+// only read /v1/models can discover them; each image entry carries
+// `kind: "image"` so chat-only clients can filter it out. Other media kinds
+// stay behind /v1/models/{kind}.
+export const DEFAULT_MODEL_LIST_KINDS = [LLM_KIND, IMAGE_KIND];
 
 // Map per-model `type` field (in PROVIDER_MODELS) to service kind.
 // Models without `type` are treated as LLM.
@@ -405,6 +413,11 @@ export async function buildModelsList(kindFilter, options = {}) {
     };
     if (combo.kind === "webSearch" || combo.kind === "webFetch") {
       entry.kind = combo.kind;
+    } else if (combo.kind === IMAGE_KIND) {
+      // Image combos have no token window; mark the kind so clients can tell
+      // them apart from chat combos in the mixed default list.
+      entry.kind = IMAGE_KIND;
+      entry.capabilities = capabilitiesFromServiceKind(IMAGE_KIND);
     } else {
       const comboCaps = aggregateComboCapabilities(combo.models, comboByName, comboSeatCapabilities);
       if (comboCaps) entry.capabilities = comboCaps;
@@ -427,11 +440,15 @@ export async function buildModelsList(kindFilter, options = {}) {
       for (const model of providerModels) {
         if (!kindFilter.includes(modelKind(model))) continue;
         if (isDisabled(alias, model.id) || isDisabled(providerId, model.id)) continue;
+        const kind = modelKind(model);
         models.push({
           id: `${alias}/${model.id}`,
           object: "model",
           owned_by: alias,
-          capabilities: getCapabilitiesForModel(alias, model.id),
+          ...(kind === IMAGE_KIND ? { kind } : {}),
+          capabilities: kind === IMAGE_KIND
+            ? capabilitiesFromServiceKind(IMAGE_KIND)
+            : getCapabilitiesForModel(alias, model.id),
         });
       }
     }
@@ -588,12 +605,13 @@ export async function buildModelsList(kindFilter, options = {}) {
           object: "model",
           owned_by: outputAlias,
         };
+        if (kind === IMAGE_KIND) model.kind = IMAGE_KIND;
         // Live-catalog resolvers (kiro/qoder/github/clinepass) mostly only return
         // { id, name } — no per-model capability data. Fall back to the same
         // pattern-matched capabilities the dashboard uses (useModelCaps.js) so
         // dynamically-discovered LLM models still surface vision/reasoning/search/tools.
         const liveCaps = liveCapabilitiesById.get(modelId);
-        const serviceCaps = capabilitiesFromServiceKind(customKind || liveKind);
+        const serviceCaps = capabilitiesFromServiceKind(customKind || liveKind || (kind === IMAGE_KIND ? kind : undefined));
         const caps = liveCaps || serviceCaps || (kind === LLM_KIND ? getCapabilitiesForModel(providerId, modelId) : null);
         if (caps) model.capabilities = caps;
         // Token limits under the snake_case names the OpenAI/OpenRouter
@@ -671,7 +689,8 @@ export async function OPTIONS() {
 }
 
 /**
- * GET /v1/models - OpenAI compatible models list (LLM/chat models only by default).
+ * GET /v1/models - OpenAI compatible models list: LLM/chat models plus
+ * image-generation models (tagged `kind: "image"`).
  * For other capabilities use /v1/models/{kind} (image, tts, stt, embedding, image-to-text, web).
  */
 export async function GET(request) {
@@ -680,7 +699,7 @@ export async function GET(request) {
     const skipDynamicFetch = request?.headers?.get(INTERNAL_MODELS_FETCH_HEADER) === "1";
     const data = await filterModelsListForKey(
       await getKeyAccessContext(request),
-      await buildModelsList([LLM_KIND], { skipDynamicFetch })
+      await buildModelsList(DEFAULT_MODEL_LIST_KINDS, { skipDynamicFetch })
     );
     return Response.json({ object: "list", data }, {
       headers: { "Access-Control-Allow-Origin": "*" },
