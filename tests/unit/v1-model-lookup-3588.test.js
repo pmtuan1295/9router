@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("../../src/app/api/v1/models/route.js", () => ({
   buildModelsList: mocks.buildModelsList,
+  DEFAULT_MODEL_LIST_KINDS: ["llm", "image"],
 }));
 
 const { GET } = await import("../../src/app/api/v1/models/[...model]/route.js");
@@ -33,7 +34,7 @@ describe("GET /v1/models/{id}", () => {
 
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual(chatModel);
-    expect(mocks.buildModelsList).toHaveBeenCalledWith(["llm"]);
+    expect(mocks.buildModelsList).toHaveBeenCalledWith(["llm", "image"]);
   });
 
   it("also handles a decoded slash in a single catch-all segment", async () => {
